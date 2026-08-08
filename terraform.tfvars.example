@@ -1,0 +1,14 @@
+# terraform.tfvars.example
+#
+# Copy this file to terraform.tfvars (gitignored) and fill in real values.
+# terraform.tfvars is where you provide values for the variables declared
+# in variables.tf — Terraform automatically loads it, no explicit `-var-file`
+# flag needed (unlike a Bicep .bicepparam file, which you pass explicitly
+# with --parameters).
+#
+location             = "eastus"
+resource_group_name  = "rg-tfstate-backend"
+
+# Added in Phase 3:
+# storage_account_name = "sttfstatebackend001"
+# container_name       = "tfstate"

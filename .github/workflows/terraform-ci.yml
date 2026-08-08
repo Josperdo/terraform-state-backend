@@ -1,0 +1,8 @@
+# .github/workflows/terraform-ci.yml
+#
+# Phase 6 stub. Will run on pull_request:
+#   - terraform fmt -check
+#   - terraform validate
+# using OIDC federated auth to Azure (no stored service principal secrets).
+#
+# Full workflow written in Phase 6.

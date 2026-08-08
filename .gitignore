@@ -1,0 +1,23 @@
+# Private planning/context files — not part of the shipped project
+NOTES.md
+CLAUDE.md
+SECURITY.md
+ROADMAP.md
+
+# Terraform state and working directory
+*.tfstate
+*.tfstate.*
+.terraform/
+# NOTE: .terraform.lock.hcl is intentionally NOT ignored — it should be
+# committed so everyone (and CI) resolves the same provider versions.
+
+# Local variable overrides (may contain values you don't want to share)
+*.tfvars
+!terraform.tfvars.example
+
+# Crash logs
+crash.log
+crash.*.log
+
+# OS / editor cruft
+.DS_Store

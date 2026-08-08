@@ -1,0 +1,12 @@
+# backend.tf.example
+#
+# Phase 5 stub. This is the reusable template that OTHER repos (e.g.
+# azure-data-tier-lab, azure-dr-lab) copy into themselves as `backend.tf`
+# to point their own Terraform state at the infrastructure this repo
+# creates.
+#
+# It will contain a `terraform { backend "azurerm" {} }` block with the
+# resource group / storage account / container from this repo's outputs,
+# plus a per-project `key` (state file blob name).
+#
+# Full content + usage instructions written in Phase 5.
