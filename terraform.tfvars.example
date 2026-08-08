@@ -8,7 +8,5 @@
 #
 location             = "eastus"
 resource_group_name  = "rg-tfstate-backend"
-
-# Added in Phase 3:
-# storage_account_name = "sttfstatebackend001"
-# container_name       = "tfstate"
+storage_account_name = "sttfstatebackend001"
+container_name       = "tfstate"

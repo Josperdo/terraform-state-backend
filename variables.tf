@@ -15,6 +15,21 @@ variable "location" {
   default     = "eastus"
 }
 
-# Added in Phase 3:
-#   - storage_account_name
-#   - container_name
+variable "storage_account_name" {
+  type        = string
+  description = "Globally-unique storage account name (Azure requirement — must be unique across all of Azure, not just this subscription)."
+
+  # Terraform's `validation` block is the equivalent of Bicep's
+  # @minLength/@maxLength decorators, but expressed as an arbitrary
+  # condition + custom error message rather than fixed decorators.
+  validation {
+    condition     = can(regex("^[a-z0-9]{3,24}$", var.storage_account_name))
+    error_message = "storage_account_name must be 3-24 characters, lowercase letters and numbers only (Azure storage account naming rules)."
+  }
+}
+
+variable "container_name" {
+  type        = string
+  description = "Name of the blob container that holds Terraform state files."
+  default     = "tfstate"
+}
