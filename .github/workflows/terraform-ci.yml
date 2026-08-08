@@ -1,8 +1,67 @@
 # .github/workflows/terraform-ci.yml
 #
-# Phase 6 stub. Will run on pull_request:
-#   - terraform fmt -check
-#   - terraform validate
-# using OIDC federated auth to Azure (no stored service principal secrets).
+# Runs fmt + validate on every PR touching .tf files. Authenticates to
+# Azure via OIDC federation — GitHub issues a short-lived, workflow-scoped
+# OIDC token, Azure AD trusts it via a federated credential on an app
+# registration, no client secret is ever generated or stored.
 #
-# Full workflow written in Phase 6.
+# One-time setup required outside this repo (Azure AD, not Terraform —
+# see ROADMAP.md Phase 6 notes for why this can't bootstrap itself):
+#   1. Create (or reuse) an Azure AD app registration + service principal
+#   2. Add a federated credential on it:
+#        issuer:  https://token.actions.githubusercontent.com
+#        subject: repo:<org>/<repo>:pull_request
+#        audience: api://AzureADTokenExchange
+#   3. Grant that service principal the minimum role it needs on this
+#      subscription/resource group (least privilege — see SECURITY.md)
+#   4. Store client-id / tenant-id / subscription-id as repo secrets
+#      (AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID) — these
+#      are identifiers, not credentials, but kept as secrets here for
+#      consistency; GitHub "Variables" would also be an acceptable place
+#      for them since OIDC means there's no secret material to protect.
+
+name: Terraform CI
+
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "**.tf"
+      - ".github/workflows/terraform-ci.yml"
+
+permissions:
+  id-token: write # required for OIDC federated auth to Azure
+  contents: read # required for actions/checkout
+
+jobs:
+  fmt-validate:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.7"
+
+      - name: Terraform fmt (check only — fails the build, makes no changes)
+        run: terraform fmt -check -diff -recursive
+
+      # Azure login isn't strictly required for fmt/validate (neither
+      # makes calls to the Azure API), but it's included here so the
+      # OIDC trust relationship is exercised and proven on every PR,
+      # ready for `terraform plan` to be added in a later phase without
+      # any auth changes needed.
+      - name: Azure login (OIDC federated — no stored secrets)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init (no backend — fmt/validate don't need remote state)
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        run: terraform validate

@@ -1,12 +1,40 @@
 # backend.tf.example
 #
-# Phase 5 stub. This is the reusable template that OTHER repos (e.g.
-# azure-data-tier-lab, azure-dr-lab) copy into themselves as `backend.tf`
-# to point their own Terraform state at the infrastructure this repo
-# creates.
+# Copy this file into a NEW Terraform project's repo as `backend.tf`, then
+# fill in the four values below using this repo's outputs:
 #
-# It will contain a `terraform { backend "azurerm" {} }` block with the
-# resource group / storage account / container from this repo's outputs,
-# plus a per-project `key` (state file blob name).
+#   terraform output resource_group_name
+#   terraform output storage_account_name
+#   terraform output container_name
 #
-# Full content + usage instructions written in Phase 5.
+# IMPORTANT — Terraform-specific gotcha coming from Bicep: a `backend`
+# block cannot reference variables, resources, data sources, or any other
+# expression — every value must be a hard-coded literal string. This is
+# different from every other block in Terraform, because the backend has
+# to be resolved before Terraform has loaded the rest of the config (it's
+# read before variables even exist, since it determines *where* to go
+# looking for state in the first place).
+
+terraform {
+  backend "azurerm" {
+    resource_group_name  = "rg-tfstate-backend"    # from this repo's `terraform output resource_group_name`
+    storage_account_name = "sttfstatebackend001"   # from this repo's `terraform output storage_account_name`
+    container_name       = "tfstate"               # from this repo's `terraform output container_name`
+
+    # Unique per consuming project — this is the blob name your state
+    # file will live under inside the shared container. Collisions here
+    # mean two projects silently share (and corrupt) one state file.
+    key = "REPLACE-WITH-PROJECT-NAME.tfstate" # e.g. "azure-data-tier-lab.tfstate"
+
+    # Authenticate via Azure AD / RBAC rather than a storage account
+    # access key. Requires the deploying identity (your local `az login`
+    # user, or the OIDC-federated identity in CI) to hold the
+    # "Storage Blob Data Contributor" role on this storage account.
+    use_azuread_auth = true
+  }
+}
+
+# After copying this in: run `terraform init`. Terraform will detect the
+# new backend config and prompt to initialize it. State locking (Phase 4)
+# needs no separate setup here — it's automatic for the azurerm backend,
+# see this repo's ROADMAP.md Phase 4 notes for how it works.
