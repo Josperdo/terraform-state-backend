@@ -17,3 +17,8 @@ output "container_name" {
   value       = azurerm_storage_container.state.name
   description = "Name of the blob container holding Terraform state files."
 }
+
+output "consumer_role_assignments" {
+  value       = { for object_id, ra in azurerm_role_assignment.consumer : object_id => ra.id }
+  description = "Role assignment IDs created for each granted consumer, keyed by their Azure AD object ID. Useful for confirming who currently has access without a separate az query."
+}

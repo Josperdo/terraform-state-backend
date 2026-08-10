@@ -33,3 +33,14 @@ variable "container_name" {
   description = "Name of the blob container that holds Terraform state files."
   default     = "tfstate"
 }
+
+variable "consumer_principal_object_ids" {
+  type        = list(string)
+  description = "Azure AD object IDs (users or service principals) granted 'Storage Blob Data Contributor' on the state storage account — least privilege, scoped to just this storage account, not the resource group or subscription. Add one entry per person or CI identity that needs to read/write Terraform state here."
+  default     = []
+
+  validation {
+    condition     = alltrue([for id in var.consumer_principal_object_ids : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))])
+    error_message = "Each entry in consumer_principal_object_ids must be a valid Azure AD object ID (GUID)."
+  }
+}

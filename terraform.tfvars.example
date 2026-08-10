@@ -10,3 +10,10 @@ location             = "eastus"
 resource_group_name  = "rg-tfstate-backend"
 storage_account_name = "sttfstatebackend001"
 container_name       = "tfstate"
+
+# Azure AD object IDs (users or CI service principals) that need to read/write
+# state here. Find a user's with `az ad signed-in-user show --query id`, or a
+# service principal's with `az ad sp show --id <app-id> --query id`.
+consumer_principal_object_ids = [
+  # "00000000-0000-0000-0000-000000000000", # e.g. your own user, for local terraform apply
+]

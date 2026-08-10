@@ -36,7 +36,10 @@ See `main.tf` for the actual resource definitions.
 1. Copy `terraform.tfvars.example` → `terraform.tfvars` and fill in real
    values. `storage_account_name` must be globally unique across all of
    Azure — check with `az storage account check-name --name <name>`
-   before committing to one.
+   before committing to one. Include your own object ID in
+   `consumer_principal_object_ids` so you can actually read/write state
+   here afterward — control-plane access from deploying the resources
+   does not include this (see "Access model" below).
 2. `terraform init`
 3. `terraform plan` — review what will be created
 4. `terraform apply`
@@ -140,12 +143,17 @@ pass `-lock-timeout=<duration>`, e.g. `-lock-timeout=5m`.
   Azure's built-in Owner/Contributor roles do **not** grant this
   automatically — RBAC control-plane roles and blob data-plane access are
   separate layers, even for the account's own owner.
-- Granting that role today is a manual step (`az role assignment create`,
-  or `az rest` against the ARM API directly if that command misbehaves —
-  it has been seen to fail with a spurious `MissingSubscription` error).
-  A more formal process (self-service, or a Terraform-managed role
-  assignment per known consumer) is still open — treat the exact
-  mechanism here as provisional.
+- Granting that role is Terraform-managed (`rbac.tf`): add the
+  identity's Azure AD object ID to `consumer_principal_object_ids` in
+  `terraform.tfvars` and `terraform apply` — no manual `az` commands for
+  day-to-day access changes. Find a user's object ID with
+  `az ad signed-in-user show --query id`, or a service principal's with
+  `az ad sp show --id <app-id> --query id`.
+- This was verified end-to-end, not just assumed: a disposable,
+  zero-role service principal was confirmed **denied** access
+  (`az storage blob list` → `AuthorizationPermissionMismatch`), granted
+  the role through this exact mechanism, confirmed to succeed on both
+  read and write, then fully revoked and deleted again.
 - CI authenticates via **OIDC federation** — GitHub issues a short-lived,
   workflow-scoped token that Azure AD trusts via a federated credential
   on an app registration. No client secret is ever generated or stored
