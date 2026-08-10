@@ -162,13 +162,34 @@ pass `-lock-timeout=<duration>`, e.g. `-lock-timeout=5m`.
   access account-wide, independent of the container's own access
   setting — state must never be publicly readable.
 
+## Deploying changes to this backend via CI
+
+Every PR touching `.tf` files runs `fmt`/`validate`/`plan` automatically,
+using a read-only identity (Reader + blob data access — it cannot change
+anything). The plan output is posted to the job summary so you can review
+the real diff before merging.
+
+Applying is deliberately manual: after merging to `main`, go to the
+**Actions** tab → **Terraform CI** → **Run workflow**, choosing the
+`main` branch. This uses a separate write identity (Contributor, scoped
+to just this resource group) and is `-target`-scoped to the three
+storage-backend resources — it will never touch `rbac.tf`'s role
+assignments, which stay local/manual by design (see "Access model").
+
+(GitHub's "required reviewers" environment protection, which would add
+an approval click before that identity can run, isn't available on this
+repo's private/free plan — the manual-trigger-only design is the
+free-tier equivalent: nothing writes to Azure without someone
+deliberately choosing to run it.)
+
 ## Known limitations
 
-- CI currently runs `fmt`/`validate` only — no `terraform plan`/`apply`
-  gate yet, so deploying changes to this backend itself is still manual.
-- This repo's own state is local/manual — it can't bootstrap onto the
-  backend it creates.
-- Single region, LRS (locally redundant) replication — no geo-redundancy
-  or multi-region failover.
+- This repo's own state is still LRS (locally redundant), single region
+  — no geo-redundancy or multi-region failover.
 - No automated check for `key` collisions between consumers — enforced
   by convention only.
+- The CI apply identity's Contributor role is scoped to the resource
+  group as it exists today — if that resource group were ever destroyed,
+  recreating it would need broader (subscription-level) permissions
+  temporarily, since a resource group can't grant access to itself
+  before it exists.
