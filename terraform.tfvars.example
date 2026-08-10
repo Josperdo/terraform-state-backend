@@ -17,3 +17,8 @@ container_name       = "tfstate"
 consumer_principal_object_ids = [
   # "00000000-0000-0000-0000-000000000000", # e.g. your own user, for local terraform apply
 ]
+
+# CI identities — see rbac.tf for what each role actually grants. Both also
+# need an entry in consumer_principal_object_ids above (blob data access).
+# ci_plan_principal_object_id  = "00000000-0000-0000-0000-000000000000"
+# ci_apply_principal_object_id = "00000000-0000-0000-0000-000000000000"

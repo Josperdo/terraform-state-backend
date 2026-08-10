@@ -1,24 +1,48 @@
 # .github/workflows/terraform-ci.yml
 #
-# Runs fmt + validate on every PR touching .tf files. Authenticates to
-# Azure via OIDC federation — GitHub issues a short-lived, workflow-scoped
-# OIDC token, Azure AD trusts it via a federated credential on an app
-# registration, no client secret is ever generated or stored.
+# Three jobs, two separate OIDC identities, deliberately split by privilege:
 #
-# One-time setup required outside this repo (Azure AD, not Terraform —
-# see ROADMAP.md Phase 6 notes for why this can't bootstrap itself):
-#   1. Create (or reuse) an Azure AD app registration + service principal
-#   2. Add a federated credential on it:
-#        issuer:  https://token.actions.githubusercontent.com
-#        subject: repo:<org>/<repo>:pull_request
-#        audience: api://AzureADTokenExchange
-#   3. Grant that service principal the minimum role it needs on this
-#      subscription/resource group (least privilege — see SECURITY.md)
-#   4. Store client-id / tenant-id / subscription-id as repo secrets
-#      (AZURE_CLIENT_ID / AZURE_TENANT_ID / AZURE_SUBSCRIPTION_ID) — these
-#      are identifiers, not credentials, but kept as secrets here for
-#      consistency; GitHub "Variables" would also be an acceptable place
-#      for them since OIDC means there's no secret material to protect.
+#   validate — fmt/validate only, no backend, no Azure resource access
+#     needed beyond exercising the OIDC trust.
+#
+#   plan — runs on every PR. Uses the "plan" identity, which holds only
+#     Reader on the resource group (see rbac.tf: ci_plan_reader) plus
+#     Storage Blob Data Contributor on the storage account (see rbac.tf:
+#     consumer, granted via consumer_principal_object_ids). It can show a
+#     diff; it cannot change anything, even if a malicious PR modified
+#     this workflow file itself — Reader has no write actions at all.
+#
+#   apply — MANUAL ONLY (workflow_dispatch), never runs automatically.
+#     GitHub's paid "required reviewers" environment protection isn't
+#     available on this repo's (private, free-tier) plan, so the human
+#     gate here is structural instead: apply has no automatic trigger,
+#     only someone with write access to this repo can dispatch it from
+#     the Actions tab, and it refuses to run against anything but `main`.
+#     Uses the "apply" identity (Contributor, scoped to just this
+#     resource group — see rbac.tf: ci_apply_contributor). Even that
+#     identity cannot touch RBAC: built-in Contributor explicitly
+#     excludes Microsoft.Authorization/*/write and /delete, and the
+#     apply step itself only ever targets the three storage-backend
+#     resources via -target — rbac.tf changes stay local/manual, by
+#     policy and by permission.
+#
+# One-time external setup already done for this repo (see NOTES.md /
+# ROADMAP.md Phase "CI posture" for exact commands used):
+#   1. Two Azure AD app registrations + service principals:
+#        terraform-state-backend-ci-plan  (federated credential subject:
+#          repo:Josperdo/terraform-state-backend:pull_request)
+#        terraform-state-backend-ci-apply (federated credential subject:
+#          repo:Josperdo/terraform-state-backend:environment:production)
+#   2. Repo secrets: AZURE_PLAN_CLIENT_ID, AZURE_APPLY_CLIENT_ID,
+#      AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID — identifiers, not
+#      credentials (OIDC means there's no secret material), kept as
+#      secrets for consistency.
+#   3. Repo variable: TF_STATE_STORAGE_ACCOUNT_NAME — non-secret, but
+#      deliberately a GitHub Variable and not hardcoded anywhere in this
+#      repo's own .tf files (see backend.tf's partial config).
+#   4. A "production" GitHub Environment (exists for the OIDC subject
+#      binding above; this repo's plan doesn't support its reviewer
+#      protection rule, hence the workflow_dispatch-only gate instead).
 
 name: Terraform CI
 
@@ -28,13 +52,19 @@ on:
     paths:
       - "**.tf"
       - ".github/workflows/terraform-ci.yml"
+  workflow_dispatch: {} # apply is manual-trigger only — see job-level guard below
 
 permissions:
   id-token: write # required for OIDC federated auth to Azure
   contents: read # required for actions/checkout
 
+env:
+  TF_BACKEND_RESOURCE_GROUP: "rg-tfstate-backend"
+  TF_BACKEND_CONTAINER: "tfstate"
+
 jobs:
-  fmt-validate:
+  validate:
+    if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
@@ -48,15 +78,10 @@ jobs:
       - name: Terraform fmt (check only — fails the build, makes no changes)
         run: terraform fmt -check -diff -recursive
 
-      # Azure login isn't strictly required for fmt/validate (neither
-      # makes calls to the Azure API), but it's included here so the
-      # OIDC trust relationship is exercised and proven on every PR,
-      # ready for `terraform plan` to be added in a later phase without
-      # any auth changes needed.
-      - name: Azure login (OIDC federated — no stored secrets)
+      - name: Azure login (OIDC — plan identity, read-only)
         uses: azure/login@v2
         with:
-          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          client-id: ${{ secrets.AZURE_PLAN_CLIENT_ID }}
           tenant-id: ${{ secrets.AZURE_TENANT_ID }}
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
 
@@ -65,3 +90,104 @@ jobs:
 
       - name: Terraform validate
         run: terraform validate
+
+  plan:
+    if: github.event_name == 'pull_request'
+    needs: validate
+    runs-on: ubuntu-latest
+    env:
+      # No terraform.tfvars in CI (it's gitignored, local-only) — same
+      # non-secret values already used for backend init above, just also
+      # supplied as required variables. TF_VAR_* is read automatically by
+      # Terraform, no -var flags needed on every command. (The `env`
+      # context can't reference other `env` entries here, hence the
+      # literal instead of ${{ env.TF_BACKEND_RESOURCE_GROUP }} — must
+      # stay in sync with that value by hand.)
+      TF_VAR_resource_group_name: "rg-tfstate-backend"
+      TF_VAR_storage_account_name: ${{ vars.TF_STATE_STORAGE_ACCOUNT_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.7"
+
+      - name: Azure login (OIDC — plan identity, read-only)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_PLAN_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init (real backend — storage account name from a repo Variable, never hardcoded)
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ env.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT_NAME }}" \
+            -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}"
+
+      # Targeted to the same 3 resources apply is scoped to. Without this,
+      # an untargeted plan would still evaluate rbac.tf — and since CI has
+      # no terraform.tfvars, consumer_principal_object_ids/ci_*_object_id
+      # fall back to empty/null, making Terraform show a false "destroy"
+      # diff for role assignments that are actually fine (just managed
+      # locally, not by CI). Caught by actually running this in CI, not
+      # by reading the config.
+      - name: Terraform plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan \
+            -target=azurerm_resource_group.state \
+            -target=azurerm_storage_account.state \
+            -target=azurerm_storage_container.state
+
+      - name: Write plan to job summary
+        if: always()
+        run: terraform show -no-color tfplan >> "$GITHUB_STEP_SUMMARY"
+
+  apply:
+    # Manual trigger only — never runs on push/merge. See header comment
+    # for why (no required-reviewers protection on this plan/repo tier).
+    if: github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: production
+    env:
+      # Same values as the plan job — see its comment for why these are
+      # literals/vars instead of referencing the workflow-level env block.
+      TF_VAR_resource_group_name: "rg-tfstate-backend"
+      TF_VAR_storage_account_name: ${{ vars.TF_STATE_STORAGE_ACCOUNT_NAME }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: "1.14.7"
+
+      - name: Azure login (OIDC — apply identity, Contributor scoped to this resource group only)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_APPLY_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Terraform init (real backend — storage account name from a repo Variable, never hardcoded)
+        run: |
+          terraform init -input=false \
+            -backend-config="resource_group_name=${{ env.TF_BACKEND_RESOURCE_GROUP }}" \
+            -backend-config="storage_account_name=${{ vars.TF_STATE_STORAGE_ACCOUNT_NAME }}" \
+            -backend-config="container_name=${{ env.TF_BACKEND_CONTAINER }}"
+
+      # Deliberately -target'd to only the storage-backend resources.
+      # rbac.tf's role assignments are excluded on purpose — see header
+      # comment. The apply identity's Contributor role would reject those
+      # writes anyway (defense in depth), but this keeps the intent
+      # explicit rather than relying on that alone.
+      - name: Terraform apply (storage backend only — RBAC changes stay local/manual)
+        run: |
+          terraform apply -auto-approve -input=false \
+            -target=azurerm_resource_group.state \
+            -target=azurerm_storage_account.state \
+            -target=azurerm_storage_container.state

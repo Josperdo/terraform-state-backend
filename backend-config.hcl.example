@@ -1,0 +1,9 @@
+# backend-config.hcl.example
+#
+# Copy to backend-config.hcl (gitignored) and fill in real values from
+# `terraform output` — same pattern as terraform.tfvars.example. Used with:
+#   terraform init -backend-config=backend-config.hcl
+
+resource_group_name  = "rg-tfstate-backend"
+storage_account_name = "REPLACE-WITH-terraform-output-storage_account_name"
+container_name       = "tfstate"

@@ -33,4 +33,14 @@ terraform {
 # in play.
 provider "azurerm" {
   features {}
+
+  # Without this, the provider falls back to calling
+  # Microsoft.Storage/storageAccounts/listKeys/action for some storage
+  # data-plane reads — an ARM control-plane action that's NOT included in
+  # Reader (only in Contributor+), and that this project's whole "no
+  # storage account keys, ever" stance (see README.md "Access model")
+  # would otherwise be quietly undermined by. This forces the provider to
+  # use Azure AD auth for storage data-plane operations instead, matching
+  # every backend.tf's use_azuread_auth = true.
+  storage_use_azuread = true
 }

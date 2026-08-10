@@ -15,6 +15,10 @@ ROADMAP.md
 *.tfvars
 !terraform.tfvars.example
 
+# Real backend config (storage account name etc.) — no real identifiers
+# in tracked files, see backend.tf
+backend-config.hcl
+
 # Crash logs
 crash.log
 crash.*.log
