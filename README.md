@@ -184,12 +184,58 @@ deliberately choosing to run it.)
 
 ## Known limitations
 
-- This repo's own state is still LRS (locally redundant), single region
-  — no geo-redundancy or multi-region failover.
 - No automated check for `key` collisions between consumers — enforced
-  by convention only.
+  by convention only. Full automated detection isn't really achievable
+  without every consumer registering here first (this repo has no way to
+  see into an independent repo's own state), and for the current scale
+  the extra process isn't worth it. Revisit if this backend ever serves
+  enough independent teams that a collision becomes likely rather than
+  theoretical.
 - The CI apply identity's Contributor role is scoped to the resource
   group as it exists today — if that resource group were ever destroyed,
   recreating it would need broader (subscription-level) permissions
   temporarily, since a resource group can't grant access to itself
-  before it exists.
+  before it exists. See "Disaster recovery" below for the actual
+  procedure — this is deliberately not automated away, since doing so
+  would mean giving CI standing subscription-level access for a scenario
+  that should be rare.
+
+## Disaster recovery: if `rg-tfstate-backend` itself is ever destroyed
+
+CI cannot recover from this automatically — that's intentional, not an
+oversight (see "Known limitations" above). Recovery is a manual,
+human-run procedure:
+
+1. **This repo's own state is unreachable the moment the storage account
+   is gone** — `terraform init` against `backend.tf` will fail, since the
+   backend it points to no longer exists. Fall back to local:
+   `terraform init -reconfigure -backend=false`. If this machine still
+   has the original `terraform.tfstate`/`terraform.tfstate.backup` from
+   before this repo's state was migrated to remote (Phase 8), that's a
+   last-resort recovery aid — but it's local-only and not backed up
+   anywhere, so if both the storage account *and* that machine are lost,
+   there's no state left at all, and every resource would need
+   `terraform import`-ing back in by hand, one at a time.
+2. Redeploy from scratch: a human with sufficient standing Azure access
+   (subscription Owner/Contributor — not either CI identity) runs through
+   "Deploying this backend" above, same as the very first bootstrap.
+3. Re-apply `rbac.tf` locally (`terraform.tfvars`'s
+   `consumer_principal_object_ids`/`ci_*_principal_object_id` should
+   already have the right values from before, assuming that file itself
+   wasn't lost too) — a brand-new storage account has zero role
+   assignments, everyone's access needs regranting.
+4. Re-migrate this repo's own state back to remote (Phase 8's
+   `-migrate-state -force-copy` step).
+5. Azure AD app registrations/federated credentials for CI (`ci-plan`,
+   `ci-apply`) are independent of the storage account and survive this —
+   no need to recreate those or touch GitHub secrets.
+6. **The bigger problem:** every *consuming* project's state lived in the
+   deleted account too. Their state is gone unless recovered via Azure
+   support within whatever window applies to the deletion (soft delete
+   protects individual blobs/containers from accidental deletion — see
+   "State locking" — but does not protect against the storage *account*
+   itself being deleted; that's a separate, not-currently-configured
+   protection). This is the real reason this scenario should be treated
+   as rare and worth active prevention (resource locks, careful
+   subscription-level access control), not just a documented recovery
+   path.
