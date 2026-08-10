@@ -10,8 +10,13 @@ resource "azurerm_storage_account" "state" {
   resource_group_name = azurerm_resource_group.state.name
   location            = azurerm_resource_group.state.location
 
-  account_tier             = "Standard"
-  account_replication_type = "LRS"
+  account_tier = "Standard"
+  # Geo-redundant + readable secondary region. State files here are tiny
+  # (kilobytes), so the cost delta over LRS is negligible — this is
+  # meaningful protection against a full East US regional outage for
+  # close to free. Was LRS through Phase 3; upgraded once the backend
+  # was actually in daily use (see ROADMAP.md "Open items").
+  account_replication_type = "RAGRS"
   min_tls_version          = "TLS1_2"
 
   # Blocks anonymous/public read access to blobs in this account, full
