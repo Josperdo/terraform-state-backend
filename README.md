@@ -239,3 +239,22 @@ human-run procedure:
    as rare and worth active prevention (resource locks, careful
    subscription-level access control), not just a documented recovery
    path.
+
+## Future additions
+
+Not started, not blocking anything — the natural next tier above what's
+here today:
+
+- **Security scanning in CI** (`tfsec` or `checkov`), alongside the
+  existing `fmt`/`validate`/`plan`.
+- **An automated test suite** (`terraform test`, or Terratest) covering
+  what's currently verified manually: that state locking actually blocks
+  a concurrent apply, and that a consumer with only the granted RBAC role
+  (no more) can actually read/write its state.
+- **An architecture diagram** — resource group → storage account →
+  container → consumers, plus the CI plan/apply flow — to communicate in
+  one picture what currently takes several sections of prose.
+- **A `LICENSE` file**, if/when this repo's visibility changes.
+- **An `azurerm_management_lock`** (`CanNotDelete`) on the resource group
+  and storage account, as active prevention against the disaster-recovery
+  scenario above rather than just a documented response to it.
