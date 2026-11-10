@@ -16,8 +16,9 @@
 #     it, and it refuses to run against anything but `main`. Uses the
 #     "apply" identity (Contributor, scoped to this resource group).
 #     Contributor excludes Microsoft.Authorization/*/write, so even this
-#     identity cannot change role assignments — rbac.tf is applied locally
-#     by a human, and both jobs -target only the three backend resources.
+#     identity cannot change role assignments or locks — rbac.tf and
+#     locks.tf are applied locally by a human, and both jobs -target only
+#     the three backend resources.
 #
 # One-time external setup:
 #   1. Two Azure AD app registrations, each with one federated credential:
@@ -198,7 +199,8 @@ jobs:
 
       # Plan to a file, then apply exactly that file — the log and job
       # summary show precisely what was applied. Same -target scope as the
-      # plan job; rbac.tf stays local/manual by policy and by permission.
+      # plan job; rbac.tf and locks.tf stay local/manual by policy and by
+      # permission.
       - name: Terraform plan (storage backend only)
         run: |
           terraform plan -input=false -no-color -lock-timeout=5m -out=tfplan \
