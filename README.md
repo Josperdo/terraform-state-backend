@@ -1,260 +1,229 @@
 # terraform-state-backend
 
-A shared Azure remote-state backend for Terraform. This repo provisions one
-resource group, one storage account, and one private blob container that
-other Terraform projects point their `backend "azurerm" {}` block at,
-instead of each project managing its own state storage. State stored here
-gets automatic locking, blob versioning, and 30-day soft-delete recovery.
+[![Terraform CI](https://github.com/Josperdo/terraform-state-backend/actions/workflows/terraform-ci.yml/badge.svg)](https://github.com/Josperdo/terraform-state-backend/actions/workflows/terraform-ci.yml)
 
-## What gets created
+A shared, hardened Azure remote-state backend for Terraform. This repo
+provisions one resource group, one storage account, and one private blob
+container that other Terraform projects use as their `backend "azurerm"`.
+Each consumer gets automatic state locking, versioned recovery, and
+access controlled entirely by Azure AD RBAC: storage account keys are
+disabled, and CI authenticates with OIDC rather than stored secrets.
 
-- A resource group
-- A storage account — `TLS1_2` minimum, no public blob access at the
-  account level, versioning + 30-day soft delete (blob and container) on
-  by default
-- A private blob container inside it, where every consuming project's
-  state file lives as its own blob (one shared container, one blob per
-  project — see "Key collisions" below)
+## Architecture
 
-See `main.tf` for the actual resource definitions.
+```mermaid
+flowchart LR
+  subgraph Azure["Azure — rg-tfstate-backend"]
+    SA["Storage account<br/>RA-GRS · TLS 1.2 · shared keys off<br/>versioning · 30-day soft delete"]
+    C["Container: tfstate (private)"]
+    SA --> C
+    C --> B1["project-a.tfstate"]
+    C --> B2["project-b.tfstate"]
+    C --> B3["terraform-state-backend.tfstate<br/>(this repo's own state)"]
+  end
 
-## Prerequisites
+  Dev["Engineers<br/>(az login)"] -- "Azure AD · Storage Blob Data Contributor" --> C
+  Consumers["Consuming projects' CI"] -- "OIDC · Storage Blob Data Contributor" --> C
+```
 
-- Terraform >= 1.6.0
-- Azure CLI, logged in (`az login`), with rights to create a resource
-  group + storage account — only needed if you're deploying this backend
-  for the first time, not if you're just pointing another project at an
-  already-deployed one
-- To *consume* an already-deployed backend: your identity (local
-  `az login` user, or CI's OIDC-federated identity) needs the **"Storage
-  Blob Data Contributor"** Azure RBAC role on the storage account. See
-  "Access model" below — this is not automatic, even for the account
-  owner.
+```mermaid
+flowchart LR
+  PR["Pull request"] --> V["validate<br/>fmt · validate · terraform test · checkov<br/>(no Azure credentials)"]
+  V --> P["plan<br/>OIDC: Reader on RG<br/>plan → job summary"]
+  M["Merge to main"] -.-> D["Manual dispatch<br/>(Actions → Run workflow)"]
+  D --> A["apply<br/>OIDC: Contributor on RG<br/>cannot modify RBAC"]
+```
 
-## Deploying this backend (one-time, per environment)
+## Design decisions
 
-1. Copy `terraform.tfvars.example` → `terraform.tfvars` and fill in real
-   values. `storage_account_name` must be globally unique across all of
-   Azure — check with `az storage account check-name --name <name>`
-   before committing to one. Include your own object ID in
-   `consumer_principal_object_ids` so you can actually read/write state
-   here afterward — control-plane access from deploying the resources
-   does not include this (see "Access model" below).
-2. `terraform init`
-3. `terraform plan` — review what will be created
-4. `terraform apply`
-5. `terraform output` — these four values (resource group, storage
-   account, container name, plus a key you choose per consumer) are what
-   every consuming project needs.
+| Decision | Why |
+| --- | --- |
+| One storage account and container shared by all consumers, separated by blob `key` | Keeps the backend simple; one place to harden, monitor, and recover |
+| Shared key access **disabled**; every consumer uses `use_azuread_auth = true` | No long-lived shared secret to distribute or rotate, and nothing that bypasses RBAC |
+| Blob versioning + 30-day soft delete (blobs and containers) | Recovers from a bad `apply` or an accidental `terraform state rm` with no separate backup system |
+| RA-GRS replication | State files are kilobytes; geo-redundancy costs almost nothing |
+| `prevent_destroy` on every resource | One accidental `terraform destroy` here would take every consumer's state with it |
+| OIDC federation for CI, with **separate plan and apply identities** | No client secrets. A PR can only ever reach a Reader identity; writes need a manual dispatch from `main` |
+| Apply identity is Contributor (excludes `Microsoft.Authorization/*/write`) | CI is structurally unable to change who has access; `rbac.tf` is applied by a human |
+| Partial backend config for this repo's own state | Real resource names come from `-backend-config` at init time, not tracked files |
 
-This repo's own state stays **local** (gitignored) — it can't depend on
-the backend it's in the middle of creating, so there's no remote-state
-setup for this repo itself.
+## What's been verified (against real Azure, not just on paper)
 
-## Pointing another project's state here
+- **Locking:** two concurrent `apply`s against the same key. The second failed
+  immediately with `Error acquiring the state lock` / `state blob is already
+  locked`, and the lease released cleanly afterward (see [State locking](#state-locking)).
+- **Least privilege:** a zero-role service principal was **denied**
+  (`AuthorizationPermissionMismatch`), granted access through `rbac.tf`,
+  confirmed able to read *and* write, then revoked and deleted.
+- **CI end to end:** real PRs through `validate` → `plan` with the
+  read-only identity, then manual `apply` dispatches. One was a no-op; one
+  changed real infrastructure (LRS → RA-GRS), confirmed independently with
+  `az storage account show`.
+- **A bug only least privilege could find:** without
+  `storage_use_azuread = true`, the azurerm provider silently calls
+  `listKeys` for some storage reads. That worked under elevated local
+  credentials and failed under the Reader-only CI identity, which is how
+  it was found. The fix is in [providers.tf](providers.tf).
 
-1. In the consuming project's repo, copy this repo's `backend.tf.example`
-   → `backend.tf`.
+On every PR, CI also runs `terraform test` ([tests/](tests/)) to assert
+the security baseline (keys off, no public access, TLS 1.2, versioning,
+soft delete, private container) and a checkov scan. Every checkov
+exception is justified inline in [main.tf](main.tf).
+
+## Repository layout
+
+| File | Purpose |
+| --- | --- |
+| [main.tf](main.tf) | Resource group, storage account, container |
+| [rbac.tf](rbac.tf) | Role assignments for consumers and the two CI identities (applied locally only) |
+| [variables.tf](variables.tf) / [outputs.tf](outputs.tf) | Inputs (with validation) and the values consumers need |
+| [providers.tf](providers.tf) / [backend.tf](backend.tf) | Provider config; this repo's own remote state (partial config) |
+| [backend.tf.example](backend.tf.example) | Template for consuming projects |
+| [tests/](tests/) | `terraform test` suite with a mocked provider, so it needs no Azure credentials |
+| [.github/workflows/terraform-ci.yml](.github/workflows/terraform-ci.yml) | validate / plan / apply pipeline |
+| [docs/disaster-recovery.md](docs/disaster-recovery.md) | Runbook for losing the backend itself |
+
+## Usage
+
+### Prerequisites
+
+- Terraform >= 1.7
+- Azure CLI, logged in (`az login`)
+- To deploy the backend: rights to create a resource group and storage
+  account, and to assign roles (e.g. Owner or User Access Administrator) on it
+- To *consume* an existing backend: the **Storage Blob Data Contributor**
+  role on the storage account (see [Access model](#access-model))
+
+### Deploying this backend (first time)
+
+This repo stores its own state in the backend it creates, so the first
+deploy has to run with local state and then migrate:
+
+1. `cp terraform.tfvars.example terraform.tfvars` and fill in real
+   values. `storage_account_name` must be globally unique
+   (`az storage account check-name --name <name>`). Put your own object
+   ID (`az ad signed-in-user show --query id -o tsv`) in
+   `consumer_principal_object_ids`. Owner on the subscription does
+   **not** include blob data access.
+2. Temporarily disable the remote backend so Terraform uses local state:
+   `mv backend.tf backend.tf.bootstrap`
+3. `terraform init`, `terraform plan`, `terraform apply`
+4. Restore the backend and migrate the local state into it:
+   ```sh
+   mv backend.tf.bootstrap backend.tf
+   cp backend-config.hcl.example backend-config.hcl   # fill in from `terraform output`
+   terraform init -migrate-state -backend-config=backend-config.hcl
+   ```
+   New role assignments can take a few minutes to propagate. If the
+   migration gets a 403, wait and retry.
+5. After confirming `terraform plan` shows no changes, delete the local
+   `terraform.tfstate*` files.
+
+On a machine where the backend already exists, skip to
+`terraform init -backend-config=backend-config.hcl`.
+
+### Pointing another project's state here
+
+1. Copy [backend.tf.example](backend.tf.example) into the consuming repo
+   as `backend.tf`.
 2. Fill in `resource_group_name` / `storage_account_name` /
-   `container_name` using this repo's `terraform output` (run that from
-   this repo's directory, not the consumer's).
-3. Set a **unique `key`** — this is the blob name the project's state
-   lives under inside the shared container. `use_azuread_auth = true` is
-   already set in the example; leave it — see "Access model" below.
-4. Make sure the identity that will run `terraform init`/`apply` there
-   has been granted "Storage Blob Data Contributor" on the storage
-   account (see below — currently a manual step, ask whoever manages
-   this backend).
-5. Run `terraform init`. Terraform detects the new backend config and
-   offers to initialize it.
+   `container_name` from this repo's `terraform output`.
+3. Choose a **unique `key`**, such as the repo name (`my-project.tfstate`).
+   Keep `use_azuread_auth = true`.
+4. Make sure the identity running Terraform there is listed in
+   `consumer_principal_object_ids` and that this repo has been re-applied.
+5. `terraform init`, then `terraform plan` to confirm. An auth error or
+   "storage account not found" means steps 2–4 need another look.
 
-**Key collisions:** every consumer must pick a distinct `key`. Two
-projects using the same key silently share — and can corrupt — one state
-file. There's no automated collision check; naming it after the
-consuming repo (e.g. `my-project.tfstate`) is the convention used in
-`backend.tf.example`.
+To see what's stored:
 
-## Verifying it's working
-
-From the consuming project, after `terraform init`:
-
+```sh
+az storage blob list --account-name <storage_account_name> \
+  --container-name <container_name> --auth-mode login -o table
 ```
-terraform plan
-```
-
-If that completes without an auth error or "storage account not found,"
-state is being read from the shared backend correctly. For a more
-concrete check, apply something trivial and then confirm its blob shows
-up:
-
-```
-az storage blob list \
-  --account-name <storage_account_name> \
-  --container-name <container_name> \
-  --auth-mode login -o table
-```
-
-## State locking
-
-The `azurerm` backend locks automatically via a blob lease — no separate
-resource or setup needed. Verified 2026-08-10 against a real deployed
-instance of this backend using a throwaway config with a 25-second
-`time_sleep` resource to hold an apply open long enough to collide with a
-second one:
-
-1. `terraform apply` #1 starts, acquires the lock, begins its 25s wait.
-2. `terraform apply` #2, run ~3s later against the same state key, fails
-   immediately — the default `-lock-timeout` is `0s`, so it doesn't wait
-   or retry, it just errors:
-
-   ```
-   Error: Error acquiring the state lock
-
-   Error message: state blob is already locked
-   Lock Info:
-     ID:        5d16c90e-bcd4-e0f7-5129-044159ee985c
-     Path:      tfstate/<key>.tfstate
-     Operation: OperationTypeApply
-     Who:       <user>@<machine>
-     Version:   1.14.6
-     Created:   2026-08-10 20:33:06 UTC
-   ```
-3. Apply #1 finishes and releases the lock. A follow-up `terraform plan`
-   confirms it's fully released — no stale lease, clean state.
-
-**If you hit a stuck lock** (e.g. a CI job got killed mid-apply and never
-released it): confirm nothing is genuinely still running against that
-key, then run `terraform force-unlock <LOCK_ID>` using the `ID` from the
-error above. Don't force-unlock if there's any chance another apply is
-still in flight — that's exactly how two applies end up racing on the
-same state.
-
-To wait instead of failing immediately (useful in CI, so a
-slow-but-legitimate apply doesn't cause a spurious failure elsewhere),
-pass `-lock-timeout=<duration>`, e.g. `-lock-timeout=5m`.
 
 ## Access model
 
-- **No storage account keys, anywhere.** Every `backend.tf` uses
-  `use_azuread_auth = true`. This means access is controlled by Azure AD
-  RBAC, not a shared secret that has to be distributed and rotated.
-- Consumers need the **"Storage Blob Data Contributor"** role, scoped to
-  this storage account (not the whole subscription/resource group).
-  Azure's built-in Owner/Contributor roles do **not** grant this
-  automatically — RBAC control-plane roles and blob data-plane access are
-  separate layers, even for the account's own owner.
-- Granting that role is Terraform-managed (`rbac.tf`): add the
-  identity's Azure AD object ID to `consumer_principal_object_ids` in
-  `terraform.tfvars` and `terraform apply` — no manual `az` commands for
-  day-to-day access changes. Find a user's object ID with
-  `az ad signed-in-user show --query id`, or a service principal's with
-  `az ad sp show --id <app-id> --query id`.
-- This was verified end-to-end, not just assumed: a disposable,
-  zero-role service principal was confirmed **denied** access
-  (`az storage blob list` → `AuthorizationPermissionMismatch`), granted
-  the role through this exact mechanism, confirmed to succeed on both
-  read and write, then fully revoked and deleted again.
-- CI authenticates via **OIDC federation** — GitHub issues a short-lived,
-  workflow-scoped token that Azure AD trusts via a federated credential
-  on an app registration. No client secret is ever generated or stored
-  in GitHub secrets.
-- The container is private and the storage account blocks public blob
-  access account-wide, independent of the container's own access
-  setting — state must never be publicly readable.
+- **No storage account keys.** Shared key access is disabled on the
+  account, so Azure AD RBAC is the only way to read or write state, for
+  people and for CI.
+- Consumers need **Storage Blob Data Contributor** on the storage
+  account. Owner/Contributor do **not** include it, because control-plane
+  and data-plane permissions are separate layers in Azure.
+- Access is managed in [rbac.tf](rbac.tf): add or remove an object ID in
+  `consumer_principal_object_ids` and `terraform apply` locally. CI never
+  applies `rbac.tf`.
+- CI uses **OIDC federation**. GitHub issues a short-lived,
+  workflow-scoped token that Azure AD trusts through a federated
+  credential, and no client secret exists anywhere.
 
-## Deploying changes to this backend via CI
+## CI/CD
 
-Every PR touching `.tf` files runs `fmt`/`validate`/`plan` automatically,
-using a read-only identity (Reader + blob data access — it cannot change
-anything). The plan output is posted to the job summary so you can review
-the real diff before merging.
+Every PR that touches Terraform files runs **validate** (fmt, validate,
+`terraform test`, checkov; no cloud credentials) and **plan** (read-only
+identity, plan posted to the job summary).
 
-Applying is deliberately manual: after merging to `main`, go to the
-**Actions** tab → **Terraform CI** → **Run workflow**, choosing the
-`main` branch. This uses a separate write identity (Contributor, scoped
-to just this resource group) and is `-target`-scoped to the three
-storage-backend resources — it will never touch `rbac.tf`'s role
-assignments, which stay local/manual by design (see "Access model").
+Applying is deliberately manual. After merging, go to **Actions → Terraform
+CI → Run workflow** on `main`. The apply job plans to a file, records that
+plan in the job summary, and applies exactly that file, using a
+Contributor identity scoped to this resource group. Both jobs `-target`
+only the three backend resources. Role assignments stay local and manual,
+by policy and by permission.
 
-(GitHub's "required reviewers" environment protection, which would add
-an approval click before that identity can run, isn't available on this
-repo's private/free plan — the manual-trigger-only design is the
-free-tier equivalent: nothing writes to Azure without someone
-deliberately choosing to run it.)
+GitHub's "required reviewers" environment rule isn't available for
+private repos on the free plan. Requiring a manual dispatch is the
+equivalent here: nothing writes to Azure unless someone chooses to run
+it.
+
+## State locking
+
+The `azurerm` backend locks state automatically with a blob lease; no
+extra resource is needed. This was tested with a 25-second `time_sleep`
+holding one apply open while a second ran against the same key:
+
+```
+Error: Error acquiring the state lock
+
+Error message: state blob is already locked
+Lock Info:
+  ID:        5d16c90e-bcd4-e0f7-5129-044159ee985c
+  Path:      tfstate/<key>.tfstate
+  Operation: OperationTypeApply
+  Who:       <user>@<machine>
+  Version:   1.14.6
+  Created:   2026-08-10 20:33:06 UTC
+```
+
+The default `-lock-timeout` is `0s`, so the second run fails immediately.
+Pass `-lock-timeout=5m` to wait instead (CI does this). **Stuck lock**
+(e.g. a job killed mid-apply): confirm nothing is still running against
+that key, then run `terraform force-unlock <LOCK_ID>`. Never force-unlock
+while another apply might still be in flight.
 
 ## Known limitations
 
-- No automated check for `key` collisions between consumers — enforced
-  by convention only. Full automated detection isn't really achievable
-  without every consumer registering here first (this repo has no way to
-  see into an independent repo's own state), and for the current scale
-  the extra process isn't worth it. Revisit if this backend ever serves
-  enough independent teams that a collision becomes likely rather than
-  theoretical.
-- The CI apply identity's Contributor role is scoped to the resource
-  group as it exists today — if that resource group were ever destroyed,
-  recreating it would need broader (subscription-level) permissions
-  temporarily, since a resource group can't grant access to itself
-  before it exists. See "Disaster recovery" below for the actual
-  procedure — this is deliberately not automated away, since doing so
-  would mean giving CI standing subscription-level access for a scenario
-  that should be rare.
+- **Account-wide data access.** Storage Blob Data Contributor is scoped
+  to the storage account, so any consumer, including the CI plan
+  identity, can read or write *every* project's state blob, not just its
+  own. Planned fix: Azure ABAC conditions that limit each principal to its
+  own key (see [Roadmap](#roadmap)).
+- **Key collisions are prevented by convention only.** Two consumers that
+  use the same `key` would share one state file. The ABAC work above
+  would turn this into an enforced boundary.
+- **Public network endpoint.** GitHub-hosted runners have dynamic IPs, so
+  the account isn't behind a firewall or private endpoint. Access still
+  requires an Azure AD identity with an explicit role assignment.
+- **Recreating the resource group needs a human.** The CI apply identity
+  is scoped to the resource group, so it can't recreate the group if it's
+  deleted. That's deliberate: CI gets no standing subscription-level
+  access. See [docs/disaster-recovery.md](docs/disaster-recovery.md).
 
-## Disaster recovery: if `rg-tfstate-backend` itself is ever destroyed
+## Roadmap
 
-CI cannot recover from this automatically — that's intentional, not an
-oversight (see "Known limitations" above). Recovery is a manual,
-human-run procedure:
+- [ ] Per-consumer ABAC conditions (each principal can only access its own state key)
+- [ ] `CanNotDelete` management lock on the resource group (applied locally, like `rbac.tf`)
+- [ ] Blob read audit logging (diagnostic settings → Log Analytics)
 
-1. **This repo's own state is unreachable the moment the storage account
-   is gone** — `terraform init` against `backend.tf` will fail, since the
-   backend it points to no longer exists. Fall back to local:
-   `terraform init -reconfigure -backend=false`. If this machine still
-   has the original `terraform.tfstate`/`terraform.tfstate.backup` from
-   before this repo's state was migrated to remote (Phase 8), that's a
-   last-resort recovery aid — but it's local-only and not backed up
-   anywhere, so if both the storage account *and* that machine are lost,
-   there's no state left at all, and every resource would need
-   `terraform import`-ing back in by hand, one at a time.
-2. Redeploy from scratch: a human with sufficient standing Azure access
-   (subscription Owner/Contributor — not either CI identity) runs through
-   "Deploying this backend" above, same as the very first bootstrap.
-3. Re-apply `rbac.tf` locally (`terraform.tfvars`'s
-   `consumer_principal_object_ids`/`ci_*_principal_object_id` should
-   already have the right values from before, assuming that file itself
-   wasn't lost too) — a brand-new storage account has zero role
-   assignments, everyone's access needs regranting.
-4. Re-migrate this repo's own state back to remote (Phase 8's
-   `-migrate-state -force-copy` step).
-5. Azure AD app registrations/federated credentials for CI (`ci-plan`,
-   `ci-apply`) are independent of the storage account and survive this —
-   no need to recreate those or touch GitHub secrets.
-6. **The bigger problem:** every *consuming* project's state lived in the
-   deleted account too. Their state is gone unless recovered via Azure
-   support within whatever window applies to the deletion (soft delete
-   protects individual blobs/containers from accidental deletion — see
-   "State locking" — but does not protect against the storage *account*
-   itself being deleted; that's a separate, not-currently-configured
-   protection). This is the real reason this scenario should be treated
-   as rare and worth active prevention (resource locks, careful
-   subscription-level access control), not just a documented recovery
-   path.
+## License
 
-## Future additions
-
-Not started, not blocking anything — the natural next tier above what's
-here today:
-
-- **Security scanning in CI** (`tfsec` or `checkov`), alongside the
-  existing `fmt`/`validate`/`plan`.
-- **An automated test suite** (`terraform test`, or Terratest) covering
-  what's currently verified manually: that state locking actually blocks
-  a concurrent apply, and that a consumer with only the granted RBAC role
-  (no more) can actually read/write its state.
-- **An architecture diagram** — resource group → storage account →
-  container → consumers, plus the CI plan/apply flow — to communicate in
-  one picture what currently takes several sections of prose.
-- **A `LICENSE` file**, if/when this repo's visibility changes.
-- **An `azurerm_management_lock`** (`CanNotDelete`) on the resource group
-  and storage account, as active prevention against the disaster-recovery
-  scenario above rather than just a documented response to it.
+[MIT](LICENSE)
