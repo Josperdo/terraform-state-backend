@@ -64,6 +64,12 @@ flowchart LR
   `listKeys` for some storage reads. That worked under elevated local
   credentials and failed under the Reader-only CI identity, which is how
   it was found. The fix is in [providers.tf](providers.tf).
+- **Delete lock:** created a throwaway container in the locked resource
+  group and tried to delete it through the ARM API. Azure refused with
+  `ScopeLocked`. Then ran the [deliberate-deletion runbook](docs/disaster-recovery.md#deleting-something-here-on-purpose)
+  end to end: removed the lock, deleted the container (it went into
+  30-day soft delete as designed), and a local `terraform apply` detected
+  the missing lock and recreated it.
 
 On every PR, CI also runs `terraform test` ([tests/](tests/)) to assert
 the security baseline (keys off, no public access, TLS 1.2, versioning,
