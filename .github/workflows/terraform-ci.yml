@@ -98,7 +98,13 @@ jobs:
           checkov --directory . --framework terraform --compact --quiet
 
   plan:
-    if: github.event_name == 'pull_request'
+    # Skipped on Dependabot PRs: GitHub withholds Actions secrets from
+    # Dependabot-triggered runs by design, and copying Azure credentials
+    # into Dependabot's own secret store would hand them to PRs made of
+    # third-party code. validate still gates those PRs; to get a plan,
+    # push any commit to the Dependabot branch yourself (the run is then
+    # triggered by you and gets the normal secrets).
+    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
     needs: validate
     runs-on: ubuntu-latest
     permissions:
