@@ -38,13 +38,11 @@
 name: Terraform CI
 
 on:
+  # Every PR, no paths filter: validate and plan are required status
+  # checks on main, and a filtered-out workflow never reports them —
+  # which would leave docs-only PRs permanently unmergeable.
   pull_request:
     branches: [main]
-    paths:
-      - "**.tf"
-      - "**.tftest.hcl"
-      - ".terraform.lock.hcl"
-      - ".github/workflows/terraform-ci.yml"
   workflow_dispatch: {} # runs `apply` only — see job-level guard below
 
 # Least privilege by default; jobs that need an OIDC token opt in.
@@ -98,13 +96,18 @@ jobs:
           checkov --directory . --framework terraform --compact --quiet
 
   plan:
-    # Skipped on Dependabot PRs: GitHub withholds Actions secrets from
-    # Dependabot-triggered runs by design, and copying Azure credentials
-    # into Dependabot's own secret store would hand them to PRs made of
-    # third-party code. validate still gates those PRs; to get a plan,
-    # push any commit to the Dependabot branch yourself (the run is then
-    # triggered by you and gets the normal secrets).
-    if: github.event_name == 'pull_request' && github.actor != 'dependabot[bot]'
+    # Skipped where GitHub withholds secrets by design, so login would
+    # always fail:
+    #   - Dependabot PRs. Copying Azure credentials into Dependabot's own
+    #     secret store would hand them to PRs made of third-party code.
+    #     To get a plan, push any commit to the Dependabot branch yourself
+    #     (the run is then triggered by you and gets the normal secrets).
+    #   - PRs from forks. No secrets and no OIDC token for outside code.
+    # validate still runs on both; merging always needs the repo owner.
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.actor != 'dependabot[bot]' &&
+      github.event.pull_request.head.repo.full_name == github.repository
     needs: validate
     runs-on: ubuntu-latest
     permissions:
