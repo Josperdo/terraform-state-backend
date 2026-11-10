@@ -42,7 +42,7 @@ flowchart LR
 | Shared key access **disabled**; every consumer uses `use_azuread_auth = true` | No long-lived shared secret to distribute or rotate, and nothing that bypasses RBAC |
 | Blob versioning + 30-day soft delete (blobs and containers) | Recovers from a bad `apply` or an accidental `terraform state rm` with no separate backup system |
 | RA-GRS replication | State files are kilobytes; geo-redundancy costs almost nothing |
-| `prevent_destroy` on every resource | One accidental `terraform destroy` here would take every consumer's state with it |
+| `prevent_destroy` on every resource **and** a `CanNotDelete` lock on the resource group | `prevent_destroy` only stops this Terraform config; the lock is enforced by Azure itself, so it also blocks the portal, CLI, and API. One accidental delete here would take every consumer's state with it |
 | OIDC federation for CI, with **separate plan and apply identities** | No client secrets. A PR can only ever reach a Reader identity; writes need a manual dispatch from `main` |
 | Apply identity is Contributor (excludes `Microsoft.Authorization/*/write`) | CI is structurally unable to change who has access; `rbac.tf` is applied by a human |
 | Partial backend config for this repo's own state | Real resource names come from `-backend-config` at init time, not tracked files |
@@ -76,6 +76,7 @@ exception is justified inline in [main.tf](main.tf).
 | --- | --- |
 | [main.tf](main.tf) | Resource group, storage account, container |
 | [rbac.tf](rbac.tf) | Role assignments for consumers and the two CI identities (applied locally only) |
+| [locks.tf](locks.tf) | `CanNotDelete` lock on the resource group (applied locally only) |
 | [variables.tf](variables.tf) / [outputs.tf](outputs.tf) | Inputs (with validation) and the values consumers need |
 | [providers.tf](providers.tf) / [backend.tf](backend.tf) | Provider config; this repo's own remote state (partial config) |
 | [backend.tf.example](backend.tf.example) | Template for consuming projects |
@@ -167,8 +168,9 @@ Applying is deliberately manual. After merging, go to **Actions → Terraform
 CI → Run workflow** on `main`. The apply job plans to a file, records that
 plan in the job summary, and applies exactly that file, using a
 Contributor identity scoped to this resource group. Both jobs `-target`
-only the three backend resources. Role assignments stay local and manual,
-by policy and by permission.
+only the three backend resources. Role assignments and the delete lock
+stay local and manual, by policy and by permission: Contributor can't
+manage either.
 
 GitHub's "required reviewers" environment rule isn't available for
 private repos on the free plan. Requiring a manual dispatch is the
@@ -221,7 +223,7 @@ while another apply might still be in flight.
 ## Roadmap
 
 - [ ] Per-consumer ABAC conditions (each principal can only access its own state key)
-- [ ] `CanNotDelete` management lock on the resource group (applied locally, like `rbac.tf`)
+- [x] `CanNotDelete` management lock on the resource group ([locks.tf](locks.tf))
 - [ ] Blob read audit logging (diagnostic settings → Log Analytics)
 
 ## License

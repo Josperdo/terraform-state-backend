@@ -76,6 +76,15 @@ run "container_is_private" {
   }
 }
 
+run "resource_group_has_delete_lock" {
+  command = plan
+
+  assert {
+    condition     = azurerm_management_lock.state.lock_level == "CanNotDelete"
+    error_message = "The resource group must carry a CanNotDelete lock."
+  }
+}
+
 run "no_rbac_without_inputs" {
   command = plan
 

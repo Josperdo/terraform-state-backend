@@ -6,10 +6,27 @@ delete) don't cover, because those protect blobs and containers, not the
 account. Everything here is run by a human: CI deliberately has no
 standing permission to recreate the resource group.
 
-**Prevention comes first.** Every resource has `prevent_destroy`, so
-Terraform refuses to destroy them. A `CanNotDelete` management lock (on
-the [Roadmap](../README.md#roadmap)) would block deletion from the portal
-and CLI as well.
+**Prevention comes first.** Two layers stand in the way of an accidental
+delete:
+
+- `prevent_destroy` on every resource: Terraform refuses to plan a
+  destroy at all.
+- A `CanNotDelete` management lock on the resource group
+  ([locks.tf](../locks.tf)): Azure itself rejects deletes from the
+  portal, CLI, API, or any other tool with a `ScopeLocked` error.
+  Updates still work, and blob reads and writes aren't affected.
+
+## Deleting something here on purpose
+
+Both guards have to be lifted deliberately, by a human with Owner (or
+User Access Administrator) rights:
+
+1. Remove `prevent_destroy` from the resource in question (a reviewed
+   PR), or delete outside Terraform.
+2. Remove the lock: `az lock delete --name do-not-delete-tfstate --resource-group <rg>`
+3. Make the change.
+4. Put the lock back with a local `terraform apply`. Terraform sees the
+   lock missing and recreates it.
 
 ## 1. Try to recover the account first
 
