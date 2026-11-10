@@ -16,7 +16,8 @@
 #      GCP, Cloudflare, etc.), so it needs to be told explicitly.
 
 terraform {
-  required_version = ">= 1.6.0"
+  # 1.7+ for `mock_provider` in tests/ (terraform test without Azure creds).
+  required_version = ">= 1.7.0"
 
   required_providers {
     azurerm = {
@@ -28,19 +29,17 @@ terraform {
 
 # The `features {}` block is required by the azurerm provider even when
 # left empty — it's the extension point for provider-specific behavior
-# (e.g. how deletes interact with soft-deleted resources). We'll come back
-# to this in Phase 3 when the storage account's soft delete setting is
-# in play.
+# (e.g. how deletes interact with soft-deleted resources). Defaults are
+# fine here: deletion is blocked by prevent_destroy (main.tf) anyway.
 provider "azurerm" {
   features {}
 
   # Without this, the provider falls back to calling
   # Microsoft.Storage/storageAccounts/listKeys/action for some storage
   # data-plane reads — an ARM control-plane action that's NOT included in
-  # Reader (only in Contributor+), and that this project's whole "no
-  # storage account keys, ever" stance (see README.md "Access model")
-  # would otherwise be quietly undermined by. This forces the provider to
-  # use Azure AD auth for storage data-plane operations instead, matching
-  # every backend.tf's use_azuread_auth = true.
+  # Reader (only in Contributor+), and that would fail outright now that
+  # the account has shared key access disabled (see main.tf). This forces
+  # the provider to use Azure AD auth for storage data-plane operations,
+  # matching every backend.tf's use_azuread_auth = true.
   storage_use_azuread = true
 }

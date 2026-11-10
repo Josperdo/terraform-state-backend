@@ -1,7 +1,7 @@
 # backend.tf.example
 #
 # Copy this file into a NEW Terraform project's repo as `backend.tf`, then
-# fill in the four values below using this repo's outputs:
+# fill in the values below using this repo's outputs plus a key you pick:
 #
 #   terraform output resource_group_name
 #   terraform output storage_account_name
@@ -35,6 +35,6 @@ terraform {
 }
 
 # After copying this in: run `terraform init`. Terraform will detect the
-# new backend config and prompt to initialize it. State locking (Phase 4)
-# needs no separate setup here — it's automatic for the azurerm backend,
-# see this repo's ROADMAP.md Phase 4 notes for how it works.
+# new backend config and prompt to initialize it. State locking needs no
+# separate setup — the azurerm backend takes a blob lease automatically
+# (see this repo's README, "State locking").

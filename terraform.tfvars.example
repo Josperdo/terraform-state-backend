@@ -11,6 +11,13 @@ resource_group_name  = "rg-tfstate-backend"
 storage_account_name = "sttfstatebackend001"
 container_name       = "tfstate"
 
+# Optional — defaults to { managed_by = "terraform", purpose = "terraform-remote-state" }
+# tags = {
+#   managed_by = "terraform"
+#   purpose    = "terraform-remote-state"
+#   owner      = "your-name"
+# }
+
 # Azure AD object IDs (users or CI service principals) that need to read/write
 # state here. Find a user's with `az ad signed-in-user show --query id`, or a
 # service principal's with `az ad sp show --id <app-id> --query id`.

@@ -1,22 +1,38 @@
-# Private planning/context files — not part of the shipped project
+# Private planning/context files — not part of the shipped project.
+# Listed in both cases: Windows/macOS match case-insensitively, Linux doesn't.
 NOTES.md
 CLAUDE.md
 SECURITY.md
+Security.md
 ROADMAP.md
+tasks/
+.claude/
 
 # Terraform state and working directory
 *.tfstate
 *.tfstate.*
 .terraform/
+.terraform.tfstate.lock.info
 # NOTE: .terraform.lock.hcl is intentionally NOT ignored — it should be
 # committed so everyone (and CI) resolves the same provider versions.
 
-# Local variable overrides (may contain values you don't want to share)
+# Saved plan files — they embed a full copy of state, including any
+# sensitive values.
+tfplan
+*.tfplan
+
+# Local-only overrides
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Local variable values (may contain values you don't want to share)
 *.tfvars
+*.tfvars.json
 !terraform.tfvars.example
 
-# Real backend config (storage account name etc.) — no real identifiers
-# in tracked files, see backend.tf
+# Real backend config (storage account name etc.) — see backend.tf
 backend-config.hcl
 
 # Crash logs
@@ -25,3 +41,4 @@ crash.*.log
 
 # OS / editor cruft
 .DS_Store
+Thumbs.db
