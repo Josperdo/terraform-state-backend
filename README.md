@@ -207,9 +207,12 @@ az storage blob list --account-name <storage_account_name> \
 
 ## CI/CD
 
-Every PR that touches Terraform files runs **validate** (fmt, validate,
-`terraform test`, checkov; no cloud credentials) and **plan** (read-only
-identity, plan posted to the job summary).
+Every PR to `main` runs **validate** (fmt, validate, `terraform test`,
+checkov; no cloud credentials) and **plan** (read-only identity, plan
+posted to the job summary). There's deliberately no paths filter: both
+are required checks, and a filtered-out workflow never reports them, so
+docs-only PRs would be unmergeable. `plan` is skipped for fork and
+Dependabot PRs, which don't get secrets.
 
 Applying is deliberately manual. After merging, go to **Actions → Terraform
 CI → Run workflow** on `main`. The apply job plans to a file, records that
@@ -219,10 +222,11 @@ only the three backend resources. Role assignments and the delete lock
 stay local and manual, by policy and by permission: Contributor can't
 manage either.
 
-GitHub's "required reviewers" environment rule isn't available for
-private repos on the free plan. Requiring a manual dispatch is the
-equivalent here: nothing writes to Azure unless someone chooses to run
-it.
+For now, the manual dispatch is the approval gate: nothing writes to
+Azure unless someone chooses to run it. Now that the repo is public,
+GitHub's "required reviewers" rule on the `production` environment is
+available on the free plan too, which would add an explicit approval
+click before `apply`. That's planned but not set up yet.
 
 ## State locking
 
