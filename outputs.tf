@@ -22,3 +22,8 @@ output "consumer_role_assignments" {
   value       = { for object_id, ra in azurerm_role_assignment.consumer : object_id => ra.id }
   description = "Blob data role assignment IDs (admins and key-scoped consumers), keyed by Azure AD object ID. Useful for confirming who currently has access without a separate az query."
 }
+
+output "audit_workspace_id" {
+  value       = azurerm_log_analytics_workspace.audit.workspace_id
+  description = "Log Analytics workspace (customer) ID for blob audit queries: az monitor log-analytics query --workspace <this>."
+}

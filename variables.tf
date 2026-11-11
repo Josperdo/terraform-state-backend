@@ -44,6 +44,17 @@ variable "container_name" {
   }
 }
 
+variable "log_analytics_workspace_name" {
+  type        = string
+  description = "Name of the Log Analytics workspace that receives blob audit logs (audit.tf)."
+  default     = "log-tfstate-audit"
+
+  validation {
+    condition     = can(regex("^[A-Za-z0-9][A-Za-z0-9-]{2,61}[A-Za-z0-9]$", var.log_analytics_workspace_name))
+    error_message = "log_analytics_workspace_name must be 4-63 characters: letters, numbers, and hyphens, starting and ending with a letter or number."
+  }
+}
+
 variable "tags" {
   type        = map(string)
   description = "Tags applied to every resource this repo creates."

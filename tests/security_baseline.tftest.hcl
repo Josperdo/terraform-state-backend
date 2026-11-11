@@ -7,7 +7,22 @@
 #
 # Run locally:  terraform init -backend=false && terraform test
 
-mock_provider "azurerm" {}
+mock_provider "azurerm" {
+  # The mock otherwise invents random strings for IDs, which the provider
+  # rejects wherever it parses an ID (e.g. the audit diagnostic setting's
+  # target). Placeholder IDs only — all-zero subscription, not a real one.
+  mock_resource "azurerm_storage_account" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-tfstate-test/providers/Microsoft.Storage/storageAccounts/sttfstatetest001"
+    }
+  }
+
+  mock_resource "azurerm_log_analytics_workspace" {
+    defaults = {
+      id = "/subscriptions/00000000-0000-0000-0000-000000000000/resourceGroups/rg-tfstate-test/providers/Microsoft.OperationalInsights/workspaces/log-tfstate-audit"
+    }
+  }
+}
 
 variables {
   resource_group_name  = "rg-tfstate-test"
@@ -82,6 +97,40 @@ run "resource_group_has_delete_lock" {
   assert {
     condition     = azurerm_management_lock.state.lock_level == "CanNotDelete"
     error_message = "The resource group must carry a CanNotDelete lock."
+  }
+}
+
+run "blob_access_is_audited" {
+  # apply (against the mock) so the storage account gets a fake ID and the
+  # diagnostic setting's target path can be checked; still fully offline.
+  command = apply
+
+  assert {
+    condition     = endswith(azurerm_monitor_diagnostic_setting.blob_audit.target_resource_id, "/blobServices/default")
+    error_message = "The audit diagnostic setting must target the blob service — the account-level setting doesn't log blob reads."
+  }
+
+  assert {
+    condition     = startswith(azurerm_monitor_diagnostic_setting.blob_audit.target_resource_id, azurerm_storage_account.state.id)
+    error_message = "The audit diagnostic setting must target this repo's state storage account."
+  }
+
+  assert {
+    condition = alltrue([
+      for c in ["StorageRead", "StorageWrite", "StorageDelete"] :
+      contains([for l in azurerm_monitor_diagnostic_setting.blob_audit.enabled_log : l.category], c)
+    ])
+    error_message = "Blob audit logging must capture StorageRead, StorageWrite, and StorageDelete."
+  }
+
+  assert {
+    condition     = azurerm_monitor_diagnostic_setting.blob_audit.log_analytics_workspace_id == azurerm_log_analytics_workspace.audit.id
+    error_message = "Blob audit logs must go to this repo's Log Analytics workspace."
+  }
+
+  assert {
+    condition     = azurerm_log_analytics_workspace.audit.local_authentication_enabled == false
+    error_message = "The audit workspace must not allow shared-key (local) authentication."
   }
 }
 
