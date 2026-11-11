@@ -1,6 +1,8 @@
 # terraform-state-backend
 
 [![Terraform CI](https://github.com/Josperdo/terraform-state-backend/actions/workflows/terraform-ci.yml/badge.svg)](https://github.com/Josperdo/terraform-state-backend/actions/workflows/terraform-ci.yml)
+[![License: MIT](https://img.shields.io/github/license/Josperdo/terraform-state-backend)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/Josperdo/terraform-state-backend)](https://github.com/Josperdo/terraform-state-backend/commits/main)
 
 A shared, hardened Azure remote-state backend for Terraform. This repo
 provisions one resource group, one storage account, and one private blob
@@ -110,7 +112,7 @@ deploy has to run with local state and then migrate:
    values. `storage_account_name` must be globally unique
    (`az storage account check-name --name <name>`). Put your own object
    ID (`az ad signed-in-user show --query id -o tsv`) in
-   `consumer_principal_object_ids`. Owner on the subscription does
+   `admin_principal_object_ids`. Owner on the subscription does
    **not** include blob data access.
 2. Temporarily disable the remote backend so Terraform uses local state:
    `mv backend.tf backend.tf.bootstrap`
@@ -138,7 +140,9 @@ On a machine where the backend already exists, skip to
 3. Choose a **unique `key`**, such as the repo name (`my-project.tfstate`).
    Keep `use_azuread_auth = true`.
 4. Make sure the identity running Terraform there is listed in
-   `consumer_principal_object_ids` and that this repo has been re-applied.
+   `consumers` in this repo, under a `state_key` that **exactly matches**
+   the `key` from step 3, and that this repo has been re-applied. Access
+   is limited to that key, so a mismatch shows up as a 403.
 5. `terraform init`, then `terraform plan` to confirm. An auth error or
    "storage account not found" means steps 2–4 need another look.
 
@@ -157,9 +161,11 @@ az storage blob list --account-name <storage_account_name> \
 - Consumers need **Storage Blob Data Contributor** on the storage
   account. Owner/Contributor do **not** include it, because control-plane
   and data-plane permissions are separate layers in Azure.
-- Access is managed in [rbac.tf](rbac.tf): add or remove an object ID in
-  `consumer_principal_object_ids` and `terraform apply` locally. CI never
-  applies `rbac.tf`.
+- Access is managed in [rbac.tf](rbac.tf): add a project to `consumers`
+  (its `state_key` plus the object IDs allowed to use it) and
+  `terraform apply` locally. Each identity is limited to its own key by an
+  ABAC condition; only `admin_principal_object_ids` (break-glass) can
+  reach every key. CI never applies `rbac.tf`.
 - CI uses **OIDC federation**. GitHub issues a short-lived,
   workflow-scoped token that Azure AD trusts through a federated
   credential, and no client secret exists anywhere.
