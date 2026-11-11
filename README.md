@@ -24,8 +24,8 @@ flowchart LR
     C --> B3["terraform-state-backend.tfstate<br/>(this repo's own state)"]
   end
 
-  Dev["Engineers<br/>(az login)"] -- "Azure AD · Storage Blob Data Contributor" --> C
-  Consumers["Consuming projects' CI"] -- "OIDC · Storage Blob Data Contributor" --> C
+  Dev["Backend owner<br/>(az login)"] -- "Azure AD · Blob Data Contributor<br/>break-glass, all keys" --> C
+  Consumers["Consuming projects<br/>(people or CI)"] -- "Blob Data Contributor<br/>ABAC: own key only" --> C
 ```
 
 ```mermaid
@@ -47,6 +47,7 @@ flowchart LR
 | `prevent_destroy` on every resource **and** a `CanNotDelete` lock on the resource group | `prevent_destroy` only stops this Terraform config; the lock is enforced by Azure itself, so it also blocks the portal, CLI, and API. One accidental delete here would take every consumer's state with it |
 | OIDC federation for CI, with **separate plan and apply identities** | No client secrets. A PR can only ever reach a Reader identity; writes need a manual dispatch from `main` |
 | Apply identity is Contributor (excludes `Microsoft.Authorization/*/write`) | CI is structurally unable to change who has access; `rbac.tf` is applied by a human |
+| Per-key **ABAC conditions** on every consumer's role assignment; one unconditional admin | A shared account no longer means shared access: each identity can only touch its own state key. The owner keeps break-glass access to every key for recovery |
 | Partial backend config for this repo's own state | Real resource names come from `-backend-config` at init time, not tracked files |
 
 ## What's been verified (against real Azure, not just on paper)
@@ -72,6 +73,19 @@ flowchart LR
   end to end: removed the lock, deleted the container (it went into
   30-day soft delete as designed), and a local `terraform apply` detected
   the missing lock and recreated it.
+- **Per-key isolation (ABAC):** two throwaway consumers (the
+  [examples/](examples/)), each with its own service principal and key.
+  Each could init, apply, and list workspaces on its own key. Each was
+  **denied** on the other's key with `AuthorizationPermissionMismatch`,
+  for reads (`state pull`) and for the lock lease (`plan`), and the
+  target blob was untouched. Locking still worked under the condition (a
+  held lease blocked even the unrestricted admin), and the CI identities,
+  now key-scoped too, kept passing `plan`.
+- **Revoking under the delete lock:** removing a consumer from `consumers`
+  failed with `ScopeLocked` (409), because the lock also blocks deleting
+  role assignments. The [revoke runbook](docs/disaster-recovery.md#revoking-a-consumers-access)
+  worked end to end, and the revoked identity was then denied even on its
+  own key.
 
 On every PR, CI also runs `terraform test` ([tests/](tests/)) to assert
 the security baseline (keys off, no public access, TLS 1.2, versioning,
@@ -88,6 +102,7 @@ exception is justified inline in [main.tf](main.tf).
 | [variables.tf](variables.tf) / [outputs.tf](outputs.tf) | Inputs (with validation) and the values consumers need |
 | [providers.tf](providers.tf) / [backend.tf](backend.tf) | Provider config; this repo's own remote state (partial config) |
 | [backend.tf.example](backend.tf.example) | Template for consuming projects |
+| [examples/](examples/) | Minimal consuming projects (partial backend config, deploy nothing); used to prove per-key isolation |
 | [tests/](tests/) | `terraform test` suite with a mocked provider, so it needs no Azure credentials |
 | [.github/workflows/terraform-ci.yml](.github/workflows/terraform-ci.yml) | validate / plan / apply pipeline |
 | [docs/disaster-recovery.md](docs/disaster-recovery.md) | Runbook for losing the backend itself |
@@ -146,6 +161,16 @@ On a machine where the backend already exists, skip to
 5. `terraform init`, then `terraform plan` to confirm. An auth error or
    "storage account not found" means steps 2–4 need another look.
 
+For a working minimal consumer, see [examples/consumer-a](examples/consumer-a/main.tf):
+it keeps only `key` and `use_azuread_auth` in the file and passes the
+rest at init time:
+
+```sh
+terraform init "-backend-config=storage_account_name=<storage_account_name>" "-backend-config=container_name=<container_name>"
+```
+
+(Quote each whole flag in PowerShell, or it splits the value at the `.`.)
+
 To see what's stored:
 
 ```sh
@@ -166,6 +191,16 @@ az storage blob list --account-name <storage_account_name> \
   `terraform apply` locally. Each identity is limited to its own key by an
   ABAC condition; only `admin_principal_object_ids` (break-glass) can
   reach every key. CI never applies `rbac.tf`.
+- The condition allows reads, writes, and deletes only on the blob
+  `<key>` and its workspaces (`<key>env:<name>`), and allows listing only
+  with the prefix `<key>env:`, which is exactly what the backend does
+  during `init`. A project can list several identities (e.g. a CI plan
+  and apply identity) under one key; one identity can belong to only one
+  project.
+- **Granting or re-keying access** is an in-place change and works with
+  the delete lock on. **Revoking access** deletes a role assignment,
+  which the lock blocks. Follow the
+  [revoke runbook](docs/disaster-recovery.md#revoking-a-consumers-access).
 - CI uses **OIDC federation**. GitHub issues a short-lived,
   workflow-scoped token that Azure AD trusts through a federated
   credential, and no client secret exists anywhere.
@@ -216,14 +251,14 @@ while another apply might still be in flight.
 
 ## Known limitations
 
-- **Account-wide data access.** Storage Blob Data Contributor is scoped
-  to the storage account, so any consumer, including the CI plan
-  identity, can read or write *every* project's state blob, not just its
-  own. Planned fix: Azure ABAC conditions that limit each principal to its
-  own key (see [Roadmap](#roadmap)).
-- **Key collisions are prevented by convention only.** Two consumers that
-  use the same `key` would share one state file. The ABAC work above
-  would turn this into an enforced boundary.
+- **Revoking access needs the delete lock lifted.** The `CanNotDelete`
+  lock blocks deleting role assignments too, so removing a consumer is a
+  short manual procedure (see the
+  [revoke runbook](docs/disaster-recovery.md#revoking-a-consumers-access))
+  rather than a one-line tfvars change. Granting access isn't affected.
+- **Admins bypass the per-key boundary by design.** Anyone in
+  `admin_principal_object_ids` can read and write every key. Keep that
+  list to the backend's owner.
 - **Public network endpoint.** GitHub-hosted runners have dynamic IPs, so
   the account isn't behind a firewall or private endpoint. Access still
   requires an Azure AD identity with an explicit role assignment.
@@ -234,7 +269,7 @@ while another apply might still be in flight.
 
 ## Roadmap
 
-- [ ] Per-consumer ABAC conditions (each principal can only access its own state key)
+- [x] Per-consumer ABAC conditions: each principal can only access its own state key ([rbac.tf](rbac.tf))
 - [x] `CanNotDelete` management lock on the resource group ([locks.tf](locks.tf))
 - [ ] Blob read audit logging (diagnostic settings → Log Analytics)
 

@@ -17,19 +17,25 @@
 
 terraform {
   backend "azurerm" {
+    # resource_group_name is optional with use_azuread_auth. The
+    # key-scoped isolation test (examples/) ran WITHOUT it, i.e. pure
+    # blob-data calls; that's the tested path for an identity that has no
+    # ARM (control-plane) role. Drop this line if init hits a 403 on it.
     resource_group_name  = "rg-tfstate-backend"    # from this repo's `terraform output resource_group_name`
     storage_account_name = "sttfstatebackend001"   # from this repo's `terraform output storage_account_name`
     container_name       = "tfstate"               # from this repo's `terraform output container_name`
 
     # Unique per consuming project — this is the blob name your state
-    # file will live under inside the shared container. Collisions here
-    # mean two projects silently share (and corrupt) one state file.
+    # file will live under inside the shared container. It must EXACTLY
+    # match the `state_key` your project is granted under `consumers` in
+    # this repo: access is limited to that key by an ABAC condition, so a
+    # mismatch is a 403, not a silent collision.
     key = "REPLACE-WITH-PROJECT-NAME.tfstate" # e.g. "azure-data-tier-lab.tfstate"
 
     # Authenticate via Azure AD / RBAC rather than a storage account
     # access key. Requires the deploying identity (your local `az login`
-    # user, or the OIDC-federated identity in CI) to hold the
-    # "Storage Blob Data Contributor" role on this storage account.
+    # user, or the OIDC-federated identity in CI) to be listed under your
+    # project in `consumers` (key-scoped "Storage Blob Data Contributor").
     use_azuread_auth = true
   }
 }
