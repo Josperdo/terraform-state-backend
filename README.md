@@ -88,6 +88,16 @@ flowchart LR
   role assignments. The [revoke runbook](docs/disaster-recovery.md#revoking-a-consumers-access)
   worked end to end, and the revoked identity was then denied even on its
   own key.
+- **Audit logging:** after enabling it, a single `plan`/`apply` cycle
+  showed up in `StorageBlobLogs` as the full state lifecycle on this
+  repo's key: `GetBlob` (read), `AcquireBlobLease` → `SetBlobMetadata`
+  (lock taken, lock info written), `PutBlob` (write), `ReleaseBlobLease`.
+  Every row carried the caller's Azure AD object ID, and every request was
+  `OAuth`, with no `AccountKey` or `SAS` anywhere, which also confirms
+  the disabled shared keys hold in practice. Note: checkov's
+  `CKV2_AZURE_21` still reports this as missing. It only recognizes the
+  legacy Storage Analytics integration, which needs an account key (see
+  the justified skip in [main.tf](main.tf)).
 
 On every PR, CI also runs `terraform test` ([tests/](tests/)) to assert
 the security baseline (keys off, no public access, TLS 1.2, versioning,
