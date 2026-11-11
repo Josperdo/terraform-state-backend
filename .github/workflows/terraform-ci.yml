@@ -10,10 +10,10 @@
 #     repo's own state. Writes the plan to the job summary for review.
 #
 #   apply — MANUAL ONLY (workflow_dispatch from main), never automatic.
-#     GitHub's "required reviewers" environment protection isn't available
-#     on a private free-tier repo, so the human gate is structural: there
-#     is no automatic trigger, only someone with write access can dispatch
-#     it, and it refuses to run against anything but `main`. Uses the
+#     Two human gates: someone with write access has to dispatch it, and
+#     the "production" environment then holds the job until a required
+#     reviewer approves it. The environment also only accepts deployments
+#     from `main`, on top of the job-level ref guard below. Uses the
 #     "apply" identity (Contributor, scoped to this resource group).
 #     Contributor excludes Microsoft.Authorization/*/write, so even this
 #     identity cannot change role assignments or locks — rbac.tf and
@@ -34,7 +34,9 @@
 #      credentials (OIDC means there's no secret material), stored as
 #      secrets so they're masked in logs.
 #   3. Repo variable: TF_STATE_STORAGE_ACCOUNT_NAME.
-#   4. A "production" GitHub Environment (the apply credential's subject).
+#   4. A "production" GitHub Environment (the apply credential's subject),
+#      with a required reviewer (self-review allowed — solo repo) and a
+#      deployment branch policy of `main` only.
 
 name: Terraform CI
 
@@ -51,7 +53,7 @@ permissions:
   contents: read
 
 env:
-  TF_VERSION: "1.14.7"
+  TF_VERSION: "1.17.2"
   TF_IN_AUTOMATION: "true"
   # Non-secret values for backend init and required variables (there's no
   # terraform.tfvars in CI — it's gitignored). Terraform reads TF_VAR_*

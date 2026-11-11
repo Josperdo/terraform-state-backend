@@ -222,11 +222,10 @@ only the three backend resources. Role assignments and the delete lock
 stay local and manual, by policy and by permission: Contributor can't
 manage either.
 
-For now, the manual dispatch is the approval gate: nothing writes to
-Azure unless someone chooses to run it. Now that the repo is public,
-GitHub's "required reviewers" rule on the `production` environment is
-available on the free plan too, which would add an explicit approval
-click before `apply`. That's planned but not set up yet.
+There are two human gates before anything writes to Azure: someone has
+to dispatch the run, and the `production` environment then pauses the
+`apply` job until a required reviewer approves it (**Review deployments**
+on the run page). The environment only accepts deployments from `main`.
 
 ## State locking
 
