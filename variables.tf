@@ -55,14 +55,47 @@ variable "tags" {
 
 # --- Access (consumed by rbac.tf) --------------------------------------
 
-variable "consumer_principal_object_ids" {
+variable "admin_principal_object_ids" {
   type        = list(string)
-  description = "Azure AD object IDs (users or service principals) granted 'Storage Blob Data Contributor' on the state storage account. Add one entry per person or CI identity that needs to read/write Terraform state here."
+  description = "Azure AD object IDs granted 'Storage Blob Data Contributor' on the whole state account with NO key condition. Break-glass only (the backend's owner, for disaster recovery of any key) — every other identity belongs in `consumers`."
   default     = []
 
   validation {
-    condition     = alltrue([for id in var.consumer_principal_object_ids : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))])
-    error_message = "Each entry in consumer_principal_object_ids must be a valid Azure AD object ID (GUID)."
+    condition     = alltrue([for id in var.admin_principal_object_ids : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))])
+    error_message = "Each entry in admin_principal_object_ids must be a valid Azure AD object ID (GUID)."
+  }
+}
+
+variable "consumers" {
+  type = map(object({
+    state_key  = string
+    object_ids = list(string)
+  }))
+  description = "State consumers (one per consuming project), keyed by a friendly name. Every identity in object_ids gets 'Storage Blob Data Contributor' restricted by an ABAC condition to that project's state_key (plus its workspaces, `<state_key>env:<name>`). A project can have several identities (e.g. CI plan + apply). state_key must exactly match the `key` in the project's backend block."
+  default     = {}
+
+  validation {
+    condition     = alltrue(flatten([for c in values(var.consumers) : [for id in c.object_ids : can(regex("^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$", id))]]))
+    error_message = "Each consumers[*].object_ids entry must be a valid Azure AD object ID (GUID)."
+  }
+
+  # Keys are interpolated into the ABAC condition string, so the character
+  # set is deliberately narrow: no quotes, no ':' (reserved for the
+  # workspace suffix), no leading '/' (ABAC paths exclude it).
+  validation {
+    condition     = alltrue([for c in values(var.consumers) : can(regex("^[A-Za-z0-9._-][A-Za-z0-9._/-]{0,254}$", c.state_key))])
+    error_message = "Each consumers[*].state_key must be 1-255 characters of letters, digits, '.', '_', '-', '/', and must not start with '/'."
+  }
+
+  # A role assignment carries one condition, so one identity = one key.
+  validation {
+    condition     = length(distinct(flatten([for c in values(var.consumers) : [for id in c.object_ids : lower(id)]]))) == length(flatten([for c in values(var.consumers) : c.object_ids]))
+    error_message = "Each identity can appear in consumers only once (one identity, one state key)."
+  }
+
+  validation {
+    condition     = length(distinct([for c in values(var.consumers) : c.state_key])) == length(var.consumers)
+    error_message = "Each consumers[*].state_key must be unique — two projects sharing a key would share (and clobber) the same state. Put both identities in one project's object_ids instead."
   }
 }
 

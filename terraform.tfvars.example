@@ -18,14 +18,32 @@ container_name       = "tfstate"
 #   owner      = "your-name"
 # }
 
-# Azure AD object IDs (users or CI service principals) that need to read/write
-# state here. Find a user's with `az ad signed-in-user show --query id`, or a
+# Find a user's object ID with `az ad signed-in-user show --query id`, or a
 # service principal's with `az ad sp show --id <app-id> --query id`.
-consumer_principal_object_ids = [
-  # "00000000-0000-0000-0000-000000000000", # e.g. your own user, for local terraform apply
+
+# Break-glass: unconditional access to every state key. Keep this to the
+# backend's owner (you, for local apply + disaster recovery).
+admin_principal_object_ids = [
+  # "00000000-0000-0000-0000-000000000000",
 ]
 
+# Everyone else: one entry per consuming project. Every identity listed gets
+# access to that project's state key only (ABAC condition). state_key must
+# exactly match the `key` in that project's backend block.
+consumers = {
+  # This repo's own state — the CI plan + apply identities below.
+  # terraform-state-backend = {
+  #   state_key  = "terraform-state-backend.tfstate"
+  #   object_ids = ["<ci-plan-object-id>", "<ci-apply-object-id>"]
+  # }
+  # my-app = {
+  #   state_key  = "my-app.tfstate"
+  #   object_ids = ["00000000-0000-0000-0000-000000000000"]
+  # }
+}
+
 # CI identities — see rbac.tf for what each role actually grants. Both also
-# need an entry in consumer_principal_object_ids above (blob data access).
+# need to be in the terraform-state-backend entry in `consumers` above (blob
+# data access to this repo's own state).
 # ci_plan_principal_object_id  = "00000000-0000-0000-0000-000000000000"
 # ci_apply_principal_object_id = "00000000-0000-0000-0000-000000000000"

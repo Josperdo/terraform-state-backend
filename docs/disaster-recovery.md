@@ -48,7 +48,7 @@ local state, the same way as the first deploy:
 1. With subscription-level rights (Owner, or Contributor plus User
    Access Administrator; not either CI identity), make sure
    `terraform.tfvars` has the previous values: the same
-   `storage_account_name`, `consumer_principal_object_ids`, and
+   `storage_account_name`, `admin_principal_object_ids`, `consumers`, and
    `ci_*_principal_object_id`.
 2. `mv backend.tf backend.tf.bootstrap`
 3. `terraform init -reconfigure`, then `terraform apply`. This recreates

@@ -104,12 +104,104 @@ run "rejects_invalid_storage_account_name" {
   expect_failures = [var.storage_account_name]
 }
 
-run "rejects_invalid_principal_id" {
+run "rejects_invalid_admin_id" {
   command = plan
 
   variables {
-    consumer_principal_object_ids = ["not-a-guid"]
+    admin_principal_object_ids = ["not-a-guid"]
   }
 
-  expect_failures = [var.consumer_principal_object_ids]
+  expect_failures = [var.admin_principal_object_ids]
+}
+
+# --- Per-key ABAC ------------------------------------------------------
+
+run "admin_is_unconditional_consumer_is_key_scoped" {
+  command = plan
+
+  variables {
+    admin_principal_object_ids = ["00000000-0000-0000-0000-00000000000a"]
+    consumers = {
+      app = {
+        state_key  = "app.tfstate"
+        object_ids = ["00000000-0000-0000-0000-00000000000b", "00000000-0000-0000-0000-00000000000c"]
+      }
+    }
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000b"].condition == azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000c"].condition
+    error_message = "Every identity in one project (e.g. CI plan + apply) must get the same key-scoped condition."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000a"].condition == null
+    error_message = "Admin grants must carry no condition (break-glass access to every key)."
+  }
+
+  assert {
+    condition     = strcontains(azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000b"].condition, "StringEquals 'app.tfstate'")
+    error_message = "A consumer's condition must pin access to exactly its own state_key."
+  }
+
+  assert {
+    condition     = strcontains(azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000b"].condition, "StringStartsWith 'app.tfstateenv:'")
+    error_message = "A consumer's condition must allow its own workspaces (<key>env:<name>) and list them."
+  }
+
+  assert {
+    condition     = azurerm_role_assignment.consumer["00000000-0000-0000-0000-00000000000b"].condition_version == "2.0"
+    error_message = "Conditions require condition_version 2.0."
+  }
+}
+
+run "rejects_duplicate_state_keys" {
+  command = plan
+
+  variables {
+    consumers = {
+      a = { state_key = "same.tfstate", object_ids = ["00000000-0000-0000-0000-00000000000a"] }
+      b = { state_key = "same.tfstate", object_ids = ["00000000-0000-0000-0000-00000000000b"] }
+    }
+  }
+
+  expect_failures = [var.consumers]
+}
+
+run "rejects_identity_in_two_projects" {
+  command = plan
+
+  variables {
+    consumers = {
+      a = { state_key = "a.tfstate", object_ids = ["00000000-0000-0000-0000-00000000000a"] }
+      b = { state_key = "b.tfstate", object_ids = ["00000000-0000-0000-0000-00000000000A"] }
+    }
+  }
+
+  expect_failures = [var.consumers]
+}
+
+run "rejects_unsafe_state_key" {
+  command = plan
+
+  variables {
+    consumers = {
+      a = { state_key = "x' OR 'y", object_ids = ["00000000-0000-0000-0000-00000000000a"] }
+    }
+  }
+
+  expect_failures = [var.consumers]
+}
+
+run "rejects_identity_as_both_admin_and_consumer" {
+  command = plan
+
+  variables {
+    admin_principal_object_ids = ["00000000-0000-0000-0000-00000000000A"]
+    consumers = {
+      a = { state_key = "a.tfstate", object_ids = ["00000000-0000-0000-0000-00000000000a"] }
+    }
+  }
+
+  expect_failures = [azurerm_role_assignment.consumer]
 }
