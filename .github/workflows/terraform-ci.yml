@@ -18,7 +18,8 @@
 #     Contributor excludes Microsoft.Authorization/*/write, so even this
 #     identity cannot change role assignments or locks — rbac.tf and
 #     locks.tf are applied locally by a human, and both jobs -target only
-#     the three backend resources.
+#     the three backend resources. audit.tf is local-only too, by policy:
+#     the identity being audited shouldn't manage its own audit trail.
 #
 # One-time external setup:
 #   1. Two Azure AD app registrations, each with one federated credential:

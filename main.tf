@@ -74,7 +74,7 @@ resource "azurerm_storage_account" "state" {
 }
 
 resource "azurerm_storage_container" "state" {
-  #checkov:skip=CKV2_AZURE_21:Blob read audit logging (diagnostic settings -> Log Analytics) is a tracked future addition, see README "Roadmap".
+  #checkov:skip=CKV2_AZURE_21:Blob reads ARE logged — via a diagnostic setting on the blob service (audit.tf). This check only recognizes the legacy azurerm_log_analytics_storage_insights resource, which needs a storage account key; keys are disabled on this account.
 
   name                  = var.container_name
   storage_account_id    = azurerm_storage_account.state.id

@@ -22,6 +22,7 @@ flowchart LR
     C --> B1["project-a.tfstate"]
     C --> B2["project-b.tfstate"]
     C --> B3["terraform-state-backend.tfstate<br/>(this repo's own state)"]
+    SA -. "blob read / write / delete logs" .-> LA["Log Analytics<br/>log-tfstate-audit<br/>30-day retention · keys off"]
   end
 
   Dev["Backend owner<br/>(az login)"] -- "Azure AD · Blob Data Contributor<br/>break-glass, all keys" --> C
@@ -48,6 +49,7 @@ flowchart LR
 | OIDC federation for CI, with **separate plan and apply identities** | No client secrets. A PR can only ever reach a Reader identity; writes need a manual dispatch from `main` |
 | Apply identity is Contributor (excludes `Microsoft.Authorization/*/write`) | CI is structurally unable to change who has access; `rbac.tf` is applied by a human |
 | Per-key **ABAC conditions** on every consumer's role assignment; one unconditional admin | A shared account no longer means shared access: each identity can only touch its own state key. The owner keeps break-glass access to every key for recovery |
+| Blob **audit logging** (reads, writes, deletes) to Log Analytics via a diagnostic setting on the blob service | State can hold secrets, so "who read this key?" needs an answer. Logs record the caller's Azure AD object ID. Applied locally only: CI's apply identity is one of the identities being audited |
 | Partial backend config for this repo's own state | Real resource names come from `-backend-config` at init time, not tracked files |
 
 ## What's been verified (against real Azure, not just on paper)
@@ -89,8 +91,8 @@ flowchart LR
 
 On every PR, CI also runs `terraform test` ([tests/](tests/)) to assert
 the security baseline (keys off, no public access, TLS 1.2, versioning,
-soft delete, private container) and a checkov scan. Every checkov
-exception is justified inline in [main.tf](main.tf).
+soft delete, private container, blob audit logging) and a checkov scan.
+Every checkov exception is justified inline in [main.tf](main.tf).
 
 ## Repository layout
 
@@ -99,6 +101,7 @@ exception is justified inline in [main.tf](main.tf).
 | [main.tf](main.tf) | Resource group, storage account, container |
 | [rbac.tf](rbac.tf) | Role assignments for consumers and the two CI identities (applied locally only) |
 | [locks.tf](locks.tf) | `CanNotDelete` lock on the resource group (applied locally only) |
+| [audit.tf](audit.tf) | Log Analytics workspace + blob audit diagnostic setting (applied locally only) |
 | [variables.tf](variables.tf) / [outputs.tf](outputs.tf) | Inputs (with validation) and the values consumers need |
 | [providers.tf](providers.tf) / [backend.tf](backend.tf) | Provider config; this repo's own remote state (partial config) |
 | [backend.tf.example](backend.tf.example) | Template for consuming projects |
@@ -220,7 +223,8 @@ plan in the job summary, and applies exactly that file, using a
 Contributor identity scoped to this resource group. Both jobs `-target`
 only the three backend resources. Role assignments and the delete lock
 stay local and manual, by policy and by permission: Contributor can't
-manage either.
+manage either. Audit logging is local-only by policy, so the pipeline
+being audited never manages its own audit trail.
 
 There are two human gates before anything writes to Azure: someone has
 to dispatch the run, and the `production` environment then pauses the
@@ -252,6 +256,30 @@ Pass `-lock-timeout=5m` to wait instead (CI does this). **Stuck lock**
 that key, then run `terraform force-unlock <LOCK_ID>`. Never force-unlock
 while another apply might still be in flight.
 
+Lock Info's `Who` is the local OS `user@machine`, not the Azure identity.
+To see which identity actually took a lease (or read a key), check the
+[audit logs](#audit-logging).
+
+## Audit logging
+
+Every blob read, write, and delete in the state account goes to the
+`log-tfstate-audit` Log Analytics workspace, with the caller's Azure AD
+object ID ([audit.tf](audit.tf)). Logs arrive after a few minutes and are
+kept for 30 days. Example: who touched a given key in the last day.
+
+```kusto
+StorageBlobLogs
+| where TimeGenerated > ago(1d)
+| where Uri has "<key>.tfstate"
+| project TimeGenerated, OperationName, StatusCode, RequesterObjectId, CallerIpAddress
+| order by TimeGenerated desc
+```
+
+Run it from the workspace's **Logs** blade, or with
+`az monitor log-analytics query --workspace "$(terraform output -raw audit_workspace_id)" --analytics-query "..."`.
+Denied requests show up too (`StatusCode` 403), so it also shows when an
+identity tries to reach a key it doesn't own.
+
 ## Known limitations
 
 - **Revoking access needs the delete lock lifted.** The `CanNotDelete`
@@ -274,7 +302,7 @@ while another apply might still be in flight.
 
 - [x] Per-consumer ABAC conditions: each principal can only access its own state key ([rbac.tf](rbac.tf))
 - [x] `CanNotDelete` management lock on the resource group ([locks.tf](locks.tf))
-- [ ] Blob read audit logging (diagnostic settings → Log Analytics)
+- [x] Blob audit logging: reads, writes, and deletes → Log Analytics ([audit.tf](audit.tf))
 
 ## License
 
